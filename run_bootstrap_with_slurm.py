@@ -7,8 +7,8 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
-# Import the unmodified original notebook function
-from xleap_analysis import compute_circular_wiggle_analysis
+# Import the notebook function (configured to handle batch array processing)
+from analysis_library.cvmi import compute_circular_wiggle_analysis
 
 def run_bootstrap_simulation(i_values, num_runs_per_i=100):
     output_dir_experiment = './wiggler_density_sweep_metrics'
@@ -23,7 +23,6 @@ def run_bootstrap_simulation(i_values, num_runs_per_i=100):
     bg_sigma = 25.0
     
     # Back-calculate energy value so raw_energy_to_bin_idx(energy) returns exactly peak_bin (25)
-    # Formula: bin = int((energy / 32) - 13) -> energy = (bin + 13) * 32
     mock_energy_value = (peak_bin + 13) * 32
 
     for i_val in i_values:
@@ -84,36 +83,33 @@ def run_bootstrap_simulation(i_values, num_runs_per_i=100):
             sim_images[run_idx] = img
             sim_total_hit_within_mask[run_idx] = len(all_x)
 
-        # --- RUN ANALYSIS ---
-        # Call the unmodified function by passing a 1-element slice loop or letting it process the batch
-        scores_for_i = []
-        displacements_for_i = []
+        # --- RUN ANALYSIS (BATCH MODE) ---
+        print(f"Piping entire batch array into the analysis function...")
         
-        print(f"Piping batch array into the analysis function...")
-        for run_idx in range(num_runs_per_i):
-            # Create a single element mock array slice to isolate one event at a time
-            max_val, dr = compute_circular_wiggle_analysis(
-                mask_array=sim_mask_array[run_idx:run_idx+1],
-                run_id=i_val,
-                output_dir_suffix=f"sim_density_i_{i_val}",
-                images=sim_images[run_idx:run_idx+1],
-                hits=sim_hits[run_idx:run_idx+1],
-                mean_energy=sim_mean_energy[run_idx:run_idx+1],
-                is_gaussian=sim_is_gaussian[run_idx:run_idx+1],
-                total_hit_within_mask=sim_total_hit_within_mask[run_idx:run_idx+1],
-                original_event_number=sim_original_event_number[run_idx:run_idx+1],
-                annulus_mask=None, # Simulation template handles zeroing manually
-                max_plots=1 # Prevent it from generating 100 images per density unless needed
-            )
-            scores_for_i.append(max_val)
-            if not np.isnan(dr):
-                displacements_for_i.append(dr)
+        # Call the library function once per i value, passing full arrays
+        scores_for_i, displacements_full = compute_circular_wiggle_analysis(
+            mask_array=sim_mask_array,
+            run_id=i_val,
+            output_dir_suffix=f"sim_density_i_{i_val}",
+            images=sim_images,
+            hits=sim_hits,
+            mean_energy=sim_mean_energy,
+            is_gaussian=sim_is_gaussian,
+            total_hit_within_mask=sim_total_hit_within_mask,
+            original_event_number=sim_original_event_number,
+            annulus_mask=None, 
+            max_plots=1 
+        )
+        
+        # Filter out NaN elements from the displacements array to match original logic
+        displacements_for_i = displacements_full[~np.isnan(displacements_full)]
 
         # --- Save Summary Pickles ---
+        # Convert arrays to lists if required for strict JSON/pickle consistency downstream
         summary_stats = {
             'i_val': i_val,
-            'scores': scores_for_i,
-            'displacements': displacements_for_i
+            'scores': scores_for_i.tolist() if isinstance(scores_for_i, np.ndarray) else scores_for_i,
+            'displacements': displacements_for_i.tolist() if isinstance(displacements_for_i, np.ndarray) else displacements_for_i
         }
         with open(os.path.join(output_dir_experiment, f'stats_i_{i_val}.pkl'), 'wb') as f:
             pickle.dump(summary_stats, f)
