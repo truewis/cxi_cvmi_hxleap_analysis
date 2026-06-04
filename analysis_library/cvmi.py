@@ -27,7 +27,7 @@ def raw_energy_to_bin_idx(mean_energy):
 
 def bootstrapped_final_score_significance(n_electron, score):
     """Calculates statistical significance Z-score against bootstrapping background baseline."""
-    return (score - n_electron * 4e-8) / (1.2e-8 * n_electron + 4e-7) # ( x - mu ) / sigma
+    return (score - n_electron * 4e-8 + 7e-9) / (2.0e-8 * n_electron + 2e-7) # ( x - mu ) / sigma
 
 def compute_circular_wiggle_analysis(
     mask_array, 

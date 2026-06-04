@@ -23,7 +23,12 @@ if __name__ == "__main__":
     else:
         unique_steps = [0]
 
-    for target_step in args.steps:
+    if args.steps is not None:
+        steps_to_process = args.steps
+    else:
+        steps_to_process = np.arange(len(unique_steps))
+    
+    for target_step in steps_to_process:
         if target_step >= len(unique_steps):
             print(f"Requested step {target_step} is out of bounds. Skipping.")
             continue
