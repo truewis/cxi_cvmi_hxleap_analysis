@@ -9,6 +9,7 @@ if __name__ == "__main__":
     parser.add_argument("--pickle_file", type=str, required=True, help="Path to pkl data pack")
     parser.add_argument("--mask", type=str, choices=["goose", "duck"], required=True)
     parser.add_argument("--steps", type=int, nargs="+", help="Steps to process")
+    parser.add_argument("--r_adjustment", type=float, help="Adjustment in scoring radius")
     args = parser.parse_args()
     
     print(f"Loading data from {args.pickle_file}...")
@@ -27,6 +28,11 @@ if __name__ == "__main__":
         steps_to_process = args.steps
     else:
         steps_to_process = np.arange(len(unique_steps))
+
+    if args.r_adjustment is not None:
+        r_adjustment = args.r_adjustment
+    else:
+        r_adjustment = 0
     
     for target_step in steps_to_process:
         if target_step >= len(unique_steps):
@@ -53,5 +59,6 @@ if __name__ == "__main__":
             total_hit_within_mask=data["total_hit_within_mask"],
             original_event_number=data["original_event_number"],
             annulus_mask=data["annulus_mask"],
-            output_prefix=args.mask
+            output_prefix=args.mask,
+            r_adjustment = r_adjustment
         )

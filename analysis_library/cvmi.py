@@ -44,7 +44,8 @@ def compute_circular_wiggle_analysis(
     cy=60,
     output_prefix="duck",
     output_dir_suffix=None,
-    max_plots=50
+    max_plots=50,
+    r_adjustment = 0
 ):
     """
     Executes circular wiggle matrix search. Fully cross-compatible with 
@@ -74,8 +75,8 @@ def compute_circular_wiggle_analysis(
         if peak_bin <= 19:
             continue
         energy = mean_energy[idx]
-        re = (energy / RAW_CHANNELS_PER_BIN - SPECTRUM_ROI_START) * 0.6 + 29.4
-        wiggle_range = min(55.0 - re, re - 28.0)
+        re = (energy / RAW_CHANNELS_PER_BIN - SPECTRUM_ROI_START) * 0.6 + 29.4 + r_adjustment
+        wiggle_range = min(52.0 - re, re - 28.0)
         if wiggle_range > max_possible_wiggle:
             max_possible_wiggle = wiggle_range
 
@@ -114,8 +115,8 @@ def compute_circular_wiggle_analysis(
             continue
             
         smoothed_img = gaussian_filter(img, sigma=1.0)
-        re = (energy / RAW_CHANNELS_PER_BIN - SPECTRUM_ROI_START) * 0.6 + 29.4 
-        wiggle_range = min(55.0 - re, re - 28.0)
+        re = (energy / RAW_CHANNELS_PER_BIN - SPECTRUM_ROI_START) * 0.6 + 29.4 + r_adjustment
+        wiggle_range = min(52.0 - re, re - 28.0)
         
         valid_x_mask = np.abs(master_x_centers - cx) <= (wiggle_range + 1e-6)
         valid_y_mask = np.abs(master_y_centers - cy) <= (wiggle_range + 1e-6)
@@ -134,7 +135,7 @@ def compute_circular_wiggle_analysis(
         for row_idx, yc in enumerate(y_centers):
             for col_idx, xc in enumerate(x_centers):
                 r_center = np.sqrt((xc - cx)**2 + (yc - cy)**2)
-                if r_center + re >= 55.0 or r_center - re >= 28.0:
+                if r_center + re >= 52.0 or r_center - re >= 28.0:
                     score_map_minus5[row_idx, col_idx] = np.nan
                     score_map_plus5[row_idx, col_idx] = np.nan
                     continue
