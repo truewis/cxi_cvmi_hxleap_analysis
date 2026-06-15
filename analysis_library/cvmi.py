@@ -25,9 +25,14 @@ def raw_energy_to_bin_idx(mean_energy):
         final_bin_idx[is_out_of_roi] = -1
     return final_bin_idx
 
+def bootstrapped_final_score_significance_sym(n_electron, score):
+    """Calculates statistical significance Z-score against bootstrapping background baseline including symmetry factor."""
+    return (score - n_electron * 3.06e-8 - 6.5e-8) / (2.0e-8 * n_electron + 6e-8) # ( x - mu ) / sigma
+
 def bootstrapped_final_score_significance(n_electron, score):
     """Calculates statistical significance Z-score against bootstrapping background baseline."""
     return (score - n_electron * 4e-8 + 7e-9) / (2.0e-8 * n_electron + 2e-7) # ( x - mu ) / sigma
+
 
 def compute_circular_wiggle_analysis(
     mask_array, 
@@ -41,7 +46,7 @@ def compute_circular_wiggle_analysis(
     original_event_number=None,
     annulus_mask=None,
     cx=67, 
-    cy=60,
+    cy=59,
     output_prefix="duck",
     output_dir_suffix=None,
     max_plots=50,
@@ -129,8 +134,10 @@ def compute_circular_wiggle_analysis(
         x_start_idx, x_end_idx = x_indices[0], x_indices[-1] + 1
         y_start_idx, y_end_idx = y_indices[0], y_indices[-1] + 1
         
+        # Initialize the symmetry map alongside the others
         score_map_minus5 = np.zeros((len(y_centers), len(x_centers)))
         score_map_plus5 = np.zeros((len(y_centers), len(x_centers)))
+        sym_map = np.zeros((len(y_centers), len(x_centers)))
         
         for row_idx, yc in enumerate(y_centers):
             for col_idx, xc in enumerate(x_centers):
@@ -138,6 +145,7 @@ def compute_circular_wiggle_analysis(
                 if r_center + re >= 52.0 or r_center - re >= 28.0:
                     score_map_minus5[row_idx, col_idx] = np.nan
                     score_map_plus5[row_idx, col_idx] = np.nan
+                    sym_map[row_idx, col_idx] = np.nan
                     continue
                     
                 r_map_try = np.sqrt((x_grid - xc)**2 + (y_grid - yc)**2)
@@ -151,6 +159,26 @@ def compute_circular_wiggle_analysis(
                 weight_re[weight_re < 1e-4] = 0
                 weight_bg_minus[weight_bg_minus < 1e-4] = 0
                 weight_bg_plus[weight_bg_plus < 1e-4] = 0
+                
+                # --- Center of Mass Symmetry Likelihood Calculation ---
+                weighted_img_re = img * weight_re
+                n_total = np.sum(weighted_img_re)
+                
+                if n_total > 0:
+                    # Calculate the center of mass of the re-weighted electrons
+                    x_com = np.sum(weighted_img_re * x_grid) / n_total
+                    y_com = np.sum(weighted_img_re * y_grid) / n_total
+                    
+                    # Squared distance from the current integration center
+                    d_sq = (x_com - xc)**2 + (y_com - yc)**2
+                    
+                    # Compute Gaussian likelihood based on random circular landing variance
+                    sym_likelihood = np.exp(-(n_total * d_sq) / (re ** 2))
+                else:
+                    sym_likelihood = 0.0
+                    
+                sym_map[row_idx, col_idx] = sym_likelihood
+                # --------------------------------------------------------
                 
                 if np.sum(weight_re) > 0:
                     w_re_norm = cos2_map_try - np.average(cos2_map_try, weights=weight_re)
@@ -175,7 +203,9 @@ def compute_circular_wiggle_analysis(
     
         floored_minus5 = np.clip(score_map_minus5, 0, None)
         floored_plus5 = np.clip(score_map_plus5, 0, None)
-        combined_score_map = floored_minus5 * floored_plus5
+        
+        # Apply the CoM symmetry likelihood multiplier
+        combined_score_map = floored_minus5 * floored_plus5 * sym_map
         
         master_slice = accumulated_grid_scores[y_start_idx:y_end_idx, x_start_idx:x_end_idx]
         valid_mask = ~np.isnan(combined_score_map)

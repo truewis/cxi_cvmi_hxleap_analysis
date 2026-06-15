@@ -14,7 +14,7 @@ def run_bootstrap_simulation(i_values, num_runs_per_i=100):
     output_dir_experiment = './wiggler_density_sweep_metrics'
     os.makedirs(output_dir_experiment, exist_ok=True)
     
-    cx, cy = 67, 60
+    cx, cy = 67, 59
     ny, nx = 140, 140
     y_grid, x_grid = np.mgrid[0:ny, 0:nx]
     

@@ -6,7 +6,7 @@
 #SBATCH --mem=8G
 #SBATCH --time=02:00:00
 #SBATCH --partition milano
-#SBATCH --account facet
+#SBATCH --account lcls:cxi100895124
 
 # Activate your psana/python virtual environment here
 # source activate custom_psana_env
