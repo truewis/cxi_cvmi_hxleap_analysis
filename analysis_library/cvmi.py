@@ -77,8 +77,6 @@ def compute_circular_wiggle_analysis(
     max_possible_wiggle = 0.0
     for idx in valid_indices:
         peak_bin = raw_energy_to_bin_idx(mean_energy[idx])
-        if peak_bin <= 19:
-            continue
         energy = mean_energy[idx]
         re = (energy / RAW_CHANNELS_PER_BIN - SPECTRUM_ROI_START) * 0.6 + 29.4 + r_adjustment
         wiggle_range = min(52.0 - re, re - 28.0)
@@ -94,6 +92,13 @@ def compute_circular_wiggle_analysis(
     
     # Initialize the absolute accumulation matrices to zero
     accumulated_grid_scores = np.zeros((len(master_y_centers), len(master_x_centers)))
+    accumulated_hits_ROI_L = None
+    accumulated_hits_ROI_R = None
+    accumulated_hits_total = None
+
+    # list of event numbers in either ROI
+    ROI_L_ind = []
+    ROI_R_ind = []
     sigma_r = 1.0  
     
     # Metric Storage Populations
@@ -115,10 +120,11 @@ def compute_circular_wiggle_analysis(
         energy = mean_energy[idx] 
         single_spike = is_gaussian[idx]
         peak_bin = raw_energy_to_bin_idx(mean_energy[idx])
+
+        if accumulated_hits_total is None:
+            accumulated_hits_total = np.zeros_like(img)
+        accumulated_hits_total += img
         
-        if peak_bin <= 19:
-            continue
-            
         smoothed_img = gaussian_filter(img, sigma=1.0)
         re = (energy / RAW_CHANNELS_PER_BIN - SPECTRUM_ROI_START) * 0.6 + 29.4 + r_adjustment
         wiggle_range = min(52.0 - re, re - 28.0)
@@ -205,80 +211,103 @@ def compute_circular_wiggle_analysis(
         floored_plus5 = np.clip(score_map_plus5, 0, None)
         
         # Apply the CoM symmetry likelihood multiplier
-        combined_score_map = floored_minus5 * floored_plus5 * sym_map
+        combined_score_map = floored_minus5 * floored_plus5
+        combined_sym_score_map = combined_score_map*sym_map
         
         master_slice = accumulated_grid_scores[y_start_idx:y_end_idx, x_start_idx:x_end_idx]
-        valid_mask = ~np.isnan(combined_score_map)
-        master_slice[valid_mask] += combined_score_map[valid_mask]
+        valid_mask = ~np.isnan(combined_sym_score_map)
+        master_slice[valid_mask] += combined_sym_score_map[valid_mask]
         
-        if not np.all(np.isnan(combined_score_map)):
-            max_combined_val = np.nanmax(combined_score_map)
-            max_y_idx, max_x_idx = np.unravel_index(np.nanargmax(combined_score_map), combined_score_map.shape)
+        if not np.all(np.isnan(combined_sym_score_map)):
+            max_combined_val = np.nanmax(combined_sym_score_map)
+            max_combined_score_without_symmetry_factor = np.nanmax(combined_score_map)
+            max_y_idx, max_x_idx = np.unravel_index(np.nanargmax(combined_sym_score_map), combined_sym_score_map.shape)
             actual_max_x = x_centers[max_x_idx]
             actual_max_y = y_centers[max_y_idx]
             dr = np.sqrt((actual_max_x - cx)**2 + (actual_max_y - cy)**2)
-            significance_sigma_value = bootstrapped_final_score_significance(n_electron=np.sum(img), score=max_combined_val)
-            
+            significance_sigma_value = bootstrapped_final_score_significance(n_electron=np.sum(img), score=max_combined_score_without_symmetry_factor)
+
             # Draw individual panel plots only if significant and under max plot limit
-            if significance_sigma_value > 3 and plotted_count < max_plots:
-                plotted_count += 1
-                fig, (ax1, ax2, ax3, ax4) = plt.subplots(1, 4, figsize=(22, 5))
-                extent_box = [x_centers[0], x_centers[-1], y_centers[0], y_centers[-1]]
-                
-                im1 = ax1.imshow(img, cmap='viridis', origin='lower')
-                fig.colorbar(im1, ax=ax1, label='Intensity')
-                ax1.set_title(f'Hitfinder Output | Hits: {total_hit_within_mask[idx]:.0f}')
-                ax1.set_xlabel('Pixel X')
-                ax1.set_ylabel('Pixel Y')
-                
-                for rad in [20, 60]:
-                    ax1.add_patch(plt.Circle((cx, cy), radius=rad, color='white', fill=False, linestyle='--', alpha=0.3, linewidth=1.0))
-                ax1.add_patch(plt.Circle((actual_max_x, actual_max_y), radius=re-5.0, color='orange', fill=False, linestyle=':', alpha=0.5, linewidth=1.2))
-                ax1.add_patch(plt.Circle((actual_max_x, actual_max_y), radius=re+5.0, color='magenta', fill=False, linestyle='-.', alpha=0.5, linewidth=1.2))
-                
-                im2 = ax2.imshow(score_map_minus5, cmap='inferno', origin='lower', extent=extent_box)
-                fig.colorbar(im2, ax=ax2, label='Δ Score ($r_e$ - $[r_e-5]$)')
-                ax2.set_title('Scan Landscape ($r_e - 5$)')
-                ax2.set_xlabel('Test Center X')
-                ax2.axvline(cx, color='cyan', linestyle='--', alpha=0.5)
-                ax2.axhline(cy, color='cyan', linestyle='--', alpha=0.5)
-                if not np.all(np.isnan(score_map_minus5)):
-                    m_y2, m_x2 = np.unravel_index(np.nanargmax(score_map_minus5), score_map_minus5.shape)
-                    ax2.plot(x_centers[m_x2], y_centers[m_y2], 'go', markersize=5)
-                
-                im3 = ax3.imshow(score_map_plus5, cmap='inferno', origin='lower', extent=extent_box)
-                fig.colorbar(im3, ax=ax3, label='Δ Score ($r_e$ - $[r_e+5]$)')
-                ax3.set_title('Scan Landscape ($r_e + 5$)')
-                ax3.set_xlabel('Test Center X')
-                ax3.axvline(cx, color='cyan', linestyle='--', alpha=0.5)
-                ax3.axhline(cy, color='cyan', linestyle='--', alpha=0.5)
-                if not np.all(np.isnan(score_map_plus5)):
-                    m_y3, m_x3 = np.unravel_index(np.nanargmax(score_map_plus5), score_map_plus5.shape)
-                    ax3.plot(x_centers[m_x3], y_centers[m_y3], 'go', markersize=5)
-            
-                im4 = ax4.imshow(combined_score_map, cmap='magma', origin='lower', extent=extent_box)
-                fig.colorbar(im4, ax=ax4, label='Product Score ($\Delta_{-5} \cdot \Delta_{+5}$)')
-                ax4.set_title('Combined Product Map')
-                ax4.set_xlabel('Test Center X')
-                ax4.axvline(cx, color='cyan', linestyle='--', alpha=0.5)
-                ax4.axhline(cy, color='cyan', linestyle='--', alpha=0.5)
-                if not np.all(np.isnan(combined_score_map)) and max_combined_val > 0:
-                    max_y_idx, max_x_idx = np.unravel_index(np.nanargmax(combined_score_map), combined_score_map.shape)
-                    ax4.plot(x_centers[max_x_idx], y_centers[max_y_idx], 'go', markersize=6, label=f'Peak ({x_centers[max_x_idx]:.1f}, {y_centers[max_y_idx]:.1f})')
-                    ax4.legend(loc='lower left')
-                
-                try:
-                    display_idx = original_event_number[idx]
-                except:
-                    display_idx = idx
+            if significance_sigma_value > 1.5:
+                if plotted_count < max_plots:
+                    plotted_count += 1
+                    try:
+                        display_idx = original_event_number[idx]
+                    except:
+                        display_idx = idx
+                    fig, (ax1, ax2, ax3, ax4) = plt.subplots(1, 4, figsize=(22, 5))
+                    extent_box = [x_centers[0], x_centers[-1], y_centers[0], y_centers[-1]]
                     
-                fig.suptitle(
-                    f'{output_prefix.upper()} Circular Sweep - Run: {run_id}, Event: {display_idx} | Bin: {peak_bin} | Calculated $r_e$: {re:.2f} | Max Combined Value: {max_combined_val:.3e} ({significance_sigma_value:.1f}$\sigma$) | (XLEAP: {single_spike})\n',
-                    fontsize=12, y=1.02
-                )
-                plt.tight_layout()
-                fig.savefig(os.path.join(output_dir_metrics, f'four_panel_sweep_{display_idx}.png'), dpi=150, bbox_inches='tight')
-                plt.close(fig)
+                    im1 = ax1.imshow(img, cmap='viridis', origin='lower')
+                    fig.colorbar(im1, ax=ax1, label='Intensity')
+                    ax1.set_title(f'Hitfinder Output | Hits: {total_hit_within_mask[idx]:.0f}')
+                    ax1.set_xlabel('Pixel X')
+                    ax1.set_ylabel('Pixel Y')
+                    
+                    for rad in [20, 60]:
+                        ax1.add_patch(plt.Circle((cx, cy), radius=rad, color='white', fill=False, linestyle='--', alpha=0.3, linewidth=1.0))
+                    ax1.add_patch(plt.Circle((actual_max_x, actual_max_y), radius=re-5.0, color='orange', fill=False, linestyle=':', alpha=0.5, linewidth=1.2))
+                    ax1.add_patch(plt.Circle((actual_max_x, actual_max_y), radius=re+5.0, color='magenta', fill=False, linestyle='-.', alpha=0.5, linewidth=1.2))
+                    
+                    im2 = ax2.imshow(score_map_minus5, cmap='inferno', origin='lower', extent=extent_box)
+                    fig.colorbar(im2, ax=ax2, label='Δ Score ($r_e$ - $[r_e-5]$)')
+                    ax2.set_title('Scan Landscape ($r_e - 5$)')
+                    ax2.set_xlabel('Test Center X')
+                    ax2.axvline(cx, color='cyan', linestyle='--', alpha=0.5)
+                    ax2.axhline(cy, color='cyan', linestyle='--', alpha=0.5)
+                    if not np.all(np.isnan(score_map_minus5)):
+                        m_y2, m_x2 = np.unravel_index(np.nanargmax(score_map_minus5), score_map_minus5.shape)
+                        ax2.plot(x_centers[m_x2], y_centers[m_y2], 'go', markersize=5)
+                    
+                    im3 = ax3.imshow(score_map_plus5, cmap='inferno', origin='lower', extent=extent_box)
+                    fig.colorbar(im3, ax=ax3, label='Δ Score ($r_e$ - $[r_e+5]$)')
+                    ax3.set_title('Scan Landscape ($r_e + 5$)')
+                    ax3.set_xlabel('Test Center X')
+                    ax3.axvline(cx, color='cyan', linestyle='--', alpha=0.5)
+                    ax3.axhline(cy, color='cyan', linestyle='--', alpha=0.5)
+                    if not np.all(np.isnan(score_map_plus5)):
+                        m_y3, m_x3 = np.unravel_index(np.nanargmax(score_map_plus5), score_map_plus5.shape)
+                        ax3.plot(x_centers[m_x3], y_centers[m_y3], 'go', markersize=5)
+                
+                    im4 = ax4.imshow(combined_score_map, cmap='magma', origin='lower', extent=extent_box)
+                    fig.colorbar(im4, ax=ax4, label='Product Score ($\Delta_{-5} \cdot \Delta_{+5}$)')
+                    ax4.set_title('Combined Product Map')
+                    ax4.set_xlabel('Test Center X')
+                    ax4.axvline(cx, color='cyan', linestyle='--', alpha=0.5)
+                    ax4.axhline(cy, color='cyan', linestyle='--', alpha=0.5)
+                    if not np.all(np.isnan(combined_score_map)) and max_combined_val > 0:
+                        max_y_idx, max_x_idx = np.unravel_index(np.nanargmax(combined_score_map), combined_score_map.shape)
+                        ax4.plot(x_centers[max_x_idx], y_centers[max_y_idx], 'go', markersize=6, label=f'Peak ({x_centers[max_x_idx]:.1f}, {y_centers[max_y_idx]:.1f})')
+                        ax4.legend(loc='lower left')
+                    
+                        
+                    fig.suptitle(
+                        f'{output_prefix.upper()} Circular Sweep - Run: {run_id}, Event: {display_idx} | Bin: {peak_bin} | Calculated $r_e$: {re:.2f} | Max Combined Value: {max_combined_val:.3e} ({significance_sigma_value:.1f}$\sigma$) | (XLEAP: {single_spike})\n',
+                        fontsize=12, y=1.02
+                    )
+                    plt.tight_layout()
+                    fig.savefig(os.path.join(output_dir_metrics, f'four_panel_sweep_{display_idx}.png'), dpi=150, bbox_inches='tight')
+                    plt.close(fig)
+
+                # if the peak position is within ROI_L or ROI_R, accumulate the corresponding hit distribution as well.
+                if 5.0 <= dr <= 10.0:
+                    # Calculate angle in degrees [-180, 180]
+                    angle_deg = np.degrees(np.arctan2(actual_max_y - cy, actual_max_x - cx))
+                    
+                    # Check ROI_R: Right side (-30 to +30 degrees)
+                    if -30.0 <= angle_deg <= 30.0:
+                        if accumulated_hits_ROI_R is None:
+                            accumulated_hits_ROI_R = np.zeros_like(img)
+                        accumulated_hits_ROI_R += img
+                        ROI_R_ind.append(display_idx)
+                    
+                    # Check ROI_L: Left side (150 to 180 or -180 to -150 degrees)
+                    elif angle_deg >= 150.0 or angle_deg <= -150.0:
+                        if accumulated_hits_ROI_L is None:
+                            accumulated_hits_ROI_L = np.zeros_like(img)
+                        accumulated_hits_ROI_L += img
+                        ROI_L_ind.append(display_idx)
+
         else:
             max_combined_val = 0.0
             actual_max_x, actual_max_y = cx, cy
@@ -299,6 +328,7 @@ def compute_circular_wiggle_analysis(
     collected_dr = np.array(collected_dr)
     collected_significance = np.array(collected_significance)
     total_samples = len(collected_scores)
+
     
     # --- BATCH SUMMARY PLOTS (Skipped during rapid single-shot simulation loops) ---
     if total_samples > 1:
@@ -378,6 +408,66 @@ def compute_circular_wiggle_analysis(
         plt.tight_layout()
         fig3.savefig(os.path.join(output_dir_metrics, f'average_wiggle_grid_landscape_run_{run_id}.png'), dpi=150)
         plt.close(fig3)
+        
+        # Plot 4: Accumulated Hit Density for ROI_L (Left Fan)
+        if accumulated_hits_ROI_L is not None:
+            np.save(os.path.join(output_dir_metrics, f'data_accumulated_hits_ROI_L_run_{run_id}.npy'), accumulated_hits_ROI_L)
+            fig4, ax_roi_l = plt.subplots(figsize=(8, 6.5))
+            
+            # Using 'viridis' to match hit intensity plots, but you can swap to 'jet' if preferred
+            im_roi_l = ax_roi_l.imshow(accumulated_hits_ROI_L, cmap='viridis', origin='lower')
+            fig4.colorbar(im_roi_l, ax=ax_roi_l, label='Accumulated Hit Intensity')
+            
+            ax_roi_l.axvline(cx, color='white', linestyle='--', alpha=0.6, label='Reference Center')
+            ax_roi_l.axhline(cy, color='white', linestyle='--', alpha=0.6)
+            
+            ax_roi_l.set_title(f'Run {run_id} | ROI_L Hit Density Distribution (n = {len(ROI_L_ind)})\n(Left Fan: ±30° from 180°, r = 5-10 px)', fontsize=11, fontweight='bold')
+            ax_roi_l.set_xlabel('Pixel X')
+            ax_roi_l.set_ylabel('Pixel Y')
+            ax_roi_l.legend(loc='lower left')
+            
+            plt.tight_layout()
+            fig4.savefig(os.path.join(output_dir_metrics, f'accumulated_hits_roi_l_run_{run_id}.png'), dpi=150)
+            plt.close(fig4)
+    
+        # Plot 5: Accumulated Hit Density for ROI_R (Right Fan)
+        if accumulated_hits_ROI_R is not None:
+            np.save(os.path.join(output_dir_metrics, f'data_accumulated_hits_ROI_R_run_{run_id}.npy'), accumulated_hits_ROI_R)
+            fig5, ax_roi_r = plt.subplots(figsize=(8, 6.5))
+            
+            im_roi_r = ax_roi_r.imshow(accumulated_hits_ROI_R, cmap='viridis', origin='lower')
+            fig5.colorbar(im_roi_r, ax=ax_roi_r, label='Accumulated Hit Intensity')
+            
+            ax_roi_r.axvline(cx, color='white', linestyle='--', alpha=0.6, label='Reference Center')
+            ax_roi_r.axhline(cy, color='white', linestyle='--', alpha=0.6)
+            
+            ax_roi_r.set_title(f'Run {run_id} | ROI_R Hit Density Distribution (n = {len(ROI_R_ind)})\n(Right Fan: ±30° from 0°, r = 5-10 px)', fontsize=11, fontweight='bold')
+            ax_roi_r.set_xlabel('Pixel X')
+            ax_roi_r.set_ylabel('Pixel Y')
+            ax_roi_r.legend(loc='lower left')
+            
+            plt.tight_layout()
+            fig5.savefig(os.path.join(output_dir_metrics, f'accumulated_hits_roi_r_run_{run_id}.png'), dpi=150)
+            plt.close(fig5)
+
+        np.save(os.path.join(output_dir_metrics, f'data_accumulated_hits_run_{run_id}.npy'), accumulated_hits_total)
+        fig6, ax_total = plt.subplots(figsize=(8, 6.5))
+        
+        im_total = ax_total.imshow(accumulated_hits_total, cmap='viridis', origin='lower')
+        fig6.colorbar(im_total, ax=ax_total, label='Accumulated Hit Intensity')
+        
+        ax_total.axvline(cx, color='white', linestyle='--', alpha=0.6, label='Reference Center')
+        ax_total.axhline(cy, color='white', linestyle='--', alpha=0.6)
+        
+        ax_total.set_title(f'Run {run_id} | Total Hit Density Distribution (n = {len(valid_indices)})', fontsize=11, fontweight='bold')
+        ax_total.set_xlabel('Pixel X')
+        ax_total.set_ylabel('Pixel Y')
+        ax_total.legend(loc='lower left')
+        
+        plt.tight_layout()
+        fig6.savefig(os.path.join(output_dir_metrics, f'accumulated_hits_run_{run_id}.png'), dpi=150)
+        plt.close(fig6)
+
 
     # Return unpackable scalars if evaluating single item, or arrays if evaluating batch
     if total_samples == 1:
