@@ -94,11 +94,15 @@ def compute_circular_wiggle_analysis(
     accumulated_grid_scores = np.zeros((len(master_y_centers), len(master_x_centers)))
     accumulated_hits_ROI_L = None
     accumulated_hits_ROI_R = None
+    accumulated_hits_ROI_U = None
+    accumulated_hits_ROI_D = None
     accumulated_hits_total = None
 
     # list of event numbers in either ROI
     ROI_L_ind = []
     ROI_R_ind = []
+    ROI_U_ind = []
+    ROI_D_ind = []
     sigma_r = 1.0  
     
     # Metric Storage Populations
@@ -228,7 +232,7 @@ def compute_circular_wiggle_analysis(
             significance_sigma_value = bootstrapped_final_score_significance(n_electron=np.sum(img), score=max_combined_score_without_symmetry_factor)
 
             # Draw individual panel plots only if significant and under max plot limit
-            if significance_sigma_value > 1.5:
+            if significance_sigma_value > 2:
                 if plotted_count < max_plots:
                     plotted_count += 1
                     try:
@@ -307,6 +311,20 @@ def compute_circular_wiggle_analysis(
                             accumulated_hits_ROI_L = np.zeros_like(img)
                         accumulated_hits_ROI_L += img
                         ROI_L_ind.append(display_idx)
+
+                    # Check ROI_U: Up side (60 to 120 degrees)
+                    elif 60.0 <= angle_deg <= 120.0:
+                        if accumulated_hits_ROI_U is None:
+                            accumulated_hits_ROI_U = np.zeros_like(img)
+                        accumulated_hits_ROI_U += img
+                        ROI_U_ind.append(display_idx)
+
+                    # Check ROI_D: Down side (-120 to -60 degrees)
+                    elif -120.0 <= angle_deg <= -60.0:
+                        if accumulated_hits_ROI_D is None:
+                            accumulated_hits_ROI_D = np.zeros_like(img)
+                        accumulated_hits_ROI_D += img
+                        ROI_D_ind.append(display_idx)
 
         else:
             max_combined_val = 0.0
@@ -445,10 +463,50 @@ def compute_circular_wiggle_analysis(
             ax_roi_r.set_xlabel('Pixel X')
             ax_roi_r.set_ylabel('Pixel Y')
             ax_roi_r.legend(loc='lower left')
-            
+
             plt.tight_layout()
             fig5.savefig(os.path.join(output_dir_metrics, f'accumulated_hits_roi_r_run_{run_id}.png'), dpi=150)
             plt.close(fig5)
+
+        # Plot 6: Accumulated Hit Density for ROI_U (Up Fan)
+        if accumulated_hits_ROI_U is not None:
+            np.save(os.path.join(output_dir_metrics, f'data_accumulated_hits_ROI_U_run_{run_id}.npy'), accumulated_hits_ROI_U)
+            fig_u, ax_roi_u = plt.subplots(figsize=(8, 6.5))
+
+            im_roi_u = ax_roi_u.imshow(accumulated_hits_ROI_U, cmap='viridis', origin='lower')
+            fig_u.colorbar(im_roi_u, ax=ax_roi_u, label='Accumulated Hit Intensity')
+
+            ax_roi_u.axvline(cx, color='white', linestyle='--', alpha=0.6, label='Reference Center')
+            ax_roi_u.axhline(cy, color='white', linestyle='--', alpha=0.6)
+
+            ax_roi_u.set_title(f'Run {run_id} | ROI_U Hit Density Distribution (n = {len(ROI_U_ind)})\n(Up Fan: ±30° from 90°, r = 5-10 px)', fontsize=11, fontweight='bold')
+            ax_roi_u.set_xlabel('Pixel X')
+            ax_roi_u.set_ylabel('Pixel Y')
+            ax_roi_u.legend(loc='lower left')
+
+            plt.tight_layout()
+            fig_u.savefig(os.path.join(output_dir_metrics, f'accumulated_hits_roi_u_run_{run_id}.png'), dpi=150)
+            plt.close(fig_u)
+
+        # Plot 7: Accumulated Hit Density for ROI_D (Down Fan)
+        if accumulated_hits_ROI_D is not None:
+            np.save(os.path.join(output_dir_metrics, f'data_accumulated_hits_ROI_D_run_{run_id}.npy'), accumulated_hits_ROI_D)
+            fig_d, ax_roi_d = plt.subplots(figsize=(8, 6.5))
+
+            im_roi_d = ax_roi_d.imshow(accumulated_hits_ROI_D, cmap='viridis', origin='lower')
+            fig_d.colorbar(im_roi_d, ax=ax_roi_d, label='Accumulated Hit Intensity')
+
+            ax_roi_d.axvline(cx, color='white', linestyle='--', alpha=0.6, label='Reference Center')
+            ax_roi_d.axhline(cy, color='white', linestyle='--', alpha=0.6)
+
+            ax_roi_d.set_title(f'Run {run_id} | ROI_D Hit Density Distribution (n = {len(ROI_D_ind)})\n(Down Fan: ±30° from -90°, r = 5-10 px)', fontsize=11, fontweight='bold')
+            ax_roi_d.set_xlabel('Pixel X')
+            ax_roi_d.set_ylabel('Pixel Y')
+            ax_roi_d.legend(loc='lower left')
+
+            plt.tight_layout()
+            fig_d.savefig(os.path.join(output_dir_metrics, f'accumulated_hits_roi_d_run_{run_id}.png'), dpi=150)
+            plt.close(fig_d)
 
         np.save(os.path.join(output_dir_metrics, f'data_accumulated_hits_run_{run_id}.npy'), accumulated_hits_total)
         fig6, ax_total = plt.subplots(figsize=(8, 6.5))
