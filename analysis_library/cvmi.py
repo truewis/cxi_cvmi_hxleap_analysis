@@ -9,10 +9,18 @@ from scipy.ndimage import gaussian_filter
 from tqdm import tqdm
 
 # --- Global Spectrum Binning Configuration ---
-RAW_CHANNELS_PER_BIN = 32  
+RAW_CHANNELS_PER_BIN = 32
 TOTAL_COARSE_BINS = 64
-SPECTRUM_ROI_START = 13  
-SPECTRUM_ROI_END = 45  
+SPECTRUM_ROI_START = 13
+SPECTRUM_ROI_END = 45
+
+# Root under which SLURM batch outputs are collected. Historically these
+# folders were written as './circular_wiggler_...' from whatever CWD the
+# job was launched in (usually batch_analysis/). Post-cleanup they live
+# under batch_analysis_results/legacy_outputs/ so batch_analysis/ stays
+# focused on code, not results.
+LEGACY_OUTPUTS_ROOT = ('/sdf/data/lcls/ds/cxi/cxi100895124/results/jinseop/'
+                       'batch_analysis_results/legacy_outputs')
 
 def raw_energy_to_bin_idx(mean_energy):
     """Converts raw mean energy values to ROI spectrum bin indices."""
@@ -56,12 +64,14 @@ def compute_circular_wiggle_analysis(
     Executes circular wiggle matrix search. Fully cross-compatible with 
     both high-throughput experimental batches and single-frame bootstrap loops.
     """
-    # Dynamically resolve output directory naming
+    # Dynamically resolve output directory naming.  Written under
+    # LEGACY_OUTPUTS_ROOT so results don't accumulate next to the code.
     if output_dir_suffix is not None:
-        output_dir_metrics = f'./circular_wiggler_{output_dir_suffix}_batch_metrics'
+        folder_name = f'circular_wiggler_{output_dir_suffix}_batch_metrics'
     else:
-        output_dir_metrics = f'./circular_wiggler_{output_prefix}_run{run_id}_step{target_step}_batch_metrics'
-        
+        folder_name = (f'circular_wiggler_{output_prefix}_run{run_id}'
+                       f'_step{target_step}_batch_metrics')
+    output_dir_metrics = os.path.join(LEGACY_OUTPUTS_ROOT, folder_name)
     os.makedirs(output_dir_metrics, exist_ok=True)
     
     # Precompute fixed detector grid coordinates

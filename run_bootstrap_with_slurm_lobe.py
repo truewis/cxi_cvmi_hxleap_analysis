@@ -8,7 +8,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 # Import the notebook function (configured to handle batch array processing)
-from analysis_library.cvmi import compute_circular_wiggle_analysis
+from analysis_library.cvmi import compute_circular_wiggle_analysis, LEGACY_OUTPUTS_ROOT
 
 # Lobe streaking configuration:
 #   - per image, draw one streak-mode angle uniformly in [-pi, pi]
@@ -59,7 +59,8 @@ def _sample_projected_shell_with_sin2(n, re, dr, cx, cy, r_max, rng):
 
 
 def run_bootstrap_simulation(i_values, num_runs_per_i=100, num_lobe_electrons=20):
-    output_dir_experiment = './wiggler_density_sweep_metrics_lobe'
+    output_dir_experiment = os.path.join(LEGACY_OUTPUTS_ROOT,
+                                         'wiggler_density_sweep_metrics_lobe')
     os.makedirs(output_dir_experiment, exist_ok=True)
 
     cx, cy = 67, 59

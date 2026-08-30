@@ -33,16 +33,16 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
-from analysis_library.cvmi import compute_circular_wiggle_analysis
+from analysis_library.cvmi import compute_circular_wiggle_analysis, LEGACY_OUTPUTS_ROOT
 
 # --- Constants shared with run_bootstrap_with_slurm_lobe.py ---
-STREAK_RADIUS_SCALE = 5.0
+STREAK_RADIUS_SCALE = 0.0
 SHELL_THICKNESS = 5.0
 R_MAX_FROM_CENTER = 65.0
 
 # --- Per-shot sampling ranges ---
 BG_N_MIN, BG_N_MAX = 50, 300         # inclusive-inclusive uniform for background n
-LOBE_FRACTION = 0.15                 # n_lobe = round(LOBE_FRACTION * n_bg)
+LOBE_FRACTION = 0.10                 # n_lobe = round(LOBE_FRACTION * n_bg)
 
 # --- Empirical background radial density ---
 # Built by extract_noise_profile_run145_step19.py; the .npy sits next to this
@@ -155,17 +155,30 @@ def _sample_projected_shell_with_sin2(n, re, dr, r_max, rng):
     return out_x, out_y
 
 
-def run_bootstrap_simulation(sigma_theta_deg_values, num_runs_per_sigma=1000):
-    output_dir_experiment = './wiggler_sigma_sweep_metrics'
+def run_bootstrap_simulation(sigma_theta_deg_values, num_runs_per_sigma=1000,
+                             streak_radius_scale=None, no_analysis=False):
+    # NOTE: the module-level STREAK_RADIUS_SCALE default (0.0) makes every
+    # shot's lobe centroid coincide with (cx, cy), which collapses the
+    # dependence on sigma_theta_deg to nothing. Pass a nonzero
+    # streak_radius_scale (e.g. via the CLI) to actually sweep meaningfully.
+    if streak_radius_scale is None:
+        streak_radius_scale = STREAK_RADIUS_SCALE
+    streak_radius_scale = float(streak_radius_scale)
+
+    output_dir_experiment = os.path.join(LEGACY_OUTPUTS_ROOT,
+                                         'wiggler_sigma_sweep_metrics')
     os.makedirs(output_dir_experiment, exist_ok=True)
 
     cx, cy = 67, 59
     ny, nx = 140, 140
     y_grid, x_grid = np.mgrid[0:ny, 0:nx]
 
-    peak_bin = 25
-    mock_energy_value = (peak_bin + 13) * 32
-    re = (mock_energy_value / 32 - 13) * 0.6 + 29.4
+    # peak_bin is now drawn per shot uniformly in [PEAK_BIN_MIN, PEAK_BIN_MAX]
+    # (inclusive-inclusive). Each draw defines the shot's mean_energy and,
+    # via re = (energy/32 - 13)*0.6 + 29.4, the photoline ring radius used
+    # by the lobe generator. cvmi.raw_energy_to_bin_idx() converts back to
+    # the same peak_bin, so the wiggle analysis sees a per-shot energy.
+    PEAK_BIN_MIN, PEAK_BIN_MAX = 16, 26
 
     rng = np.random.default_rng()
     r_max_sq = R_MAX_FROM_CENTER ** 2
@@ -180,7 +193,9 @@ def run_bootstrap_simulation(sigma_theta_deg_values, num_runs_per_sigma=1000):
 
         sim_hits = np.zeros((num_runs_per_sigma, ny, nx))
         sim_images = np.zeros((num_runs_per_sigma, ny, nx))
-        sim_mean_energy = np.full((num_runs_per_sigma,), mock_energy_value, dtype=float)
+        sim_mean_energy = np.zeros(num_runs_per_sigma, dtype=float)   # filled per shot
+        sim_peak_bin = np.zeros(num_runs_per_sigma, dtype=int)
+        sim_re = np.zeros(num_runs_per_sigma, dtype=float)
         sim_is_gaussian = np.full((num_runs_per_sigma,), True, dtype=bool)
         sim_mask_array = np.full((num_runs_per_sigma,), True, dtype=bool)
         sim_total_hit_within_mask = np.zeros((num_runs_per_sigma,))
@@ -202,6 +217,14 @@ def run_bootstrap_simulation(sigma_theta_deg_values, num_runs_per_sigma=1000):
         for run_idx in range(num_runs_per_sigma):
             img = np.zeros((ny, nx))
 
+            # Per-shot peak_bin -> mean_energy -> photoline radius (re).
+            peak_bin = int(rng.integers(PEAK_BIN_MIN, PEAK_BIN_MAX + 1))
+            mock_energy_value = (peak_bin + 13) * 32
+            re = (mock_energy_value / 32 - 13) * 0.6 + 29.4
+            sim_peak_bin[run_idx] = peak_bin
+            sim_mean_energy[run_idx] = mock_energy_value
+            sim_re[run_idx] = re
+
             # Per-shot electron counts.
             n_bg = int(rng.integers(BG_N_MIN, BG_N_MAX + 1))
             n_lobe = int(round(LOBE_FRACTION * n_bg))
@@ -210,7 +233,8 @@ def run_bootstrap_simulation(sigma_theta_deg_values, num_runs_per_sigma=1000):
 
             # --- Streaked lobe electrons ---
             streak_mode = rng.uniform(-np.pi, np.pi)
-            streak_radius = rng.rayleigh(scale=STREAK_RADIUS_SCALE)
+            streak_radius = (rng.rayleigh(scale=streak_radius_scale)
+                             if streak_radius_scale > 0 else 0.0)
             sim_streak_mode_true[run_idx] = streak_mode
             sim_streak_radius_true[run_idx] = streak_radius
             sim_cx_true[run_idx] = cx + streak_radius * np.cos(streak_mode)
@@ -270,29 +294,38 @@ def run_bootstrap_simulation(sigma_theta_deg_values, num_runs_per_sigma=1000):
             sim_total_hit_within_mask[run_idx] = len(all_x)
 
         # --- Run analysis in batch mode ---
-        print(f"Piping {num_runs_per_sigma} shots into the wiggle analysis (sigma_theta={sigma_theta_deg:g} deg)...")
-        # Encode sigma with a filesystem-friendly slug (dot -> p) so multiple sweep points don't collide.
+        # sigma_slug: filesystem-friendly encoding (dot -> p) so multiple sweep
+        # points don't collide.
         sigma_slug = f"{sigma_theta_deg:g}".replace('.', 'p')
-        scores, displacements_full = compute_circular_wiggle_analysis(
-            mask_array=sim_mask_array,
-            run_id=sigma_slug,
-            output_dir_suffix=f"sim_sigma_{sigma_slug}deg",
-            images=sim_images,
-            hits=sim_hits,
-            mean_energy=sim_mean_energy,
-            is_gaussian=sim_is_gaussian,
-            total_hit_within_mask=sim_total_hit_within_mask,
-            original_event_number=sim_original_event_number,
-            annulus_mask=None,
-            max_plots=20,
-        )
 
-        displacements = displacements_full[~np.isnan(displacements_full)]
+        if no_analysis:
+            print(f"[no-analysis] skipping streak finder for sigma_theta="
+                  f"{sigma_theta_deg:g} deg")
+            scores = np.array([])
+            displacements_full = np.full(num_runs_per_sigma, np.nan)
+            displacements = np.array([])
+        else:
+            print(f"Piping {num_runs_per_sigma} shots into the wiggle "
+                  f"analysis (sigma_theta={sigma_theta_deg:g} deg)...")
+            scores, displacements_full = compute_circular_wiggle_analysis(
+                mask_array=sim_mask_array,
+                run_id=sigma_slug,
+                output_dir_suffix=f"sim_sigma_{sigma_slug}deg",
+                images=sim_images,
+                hits=sim_hits,
+                mean_energy=sim_mean_energy,
+                is_gaussian=sim_is_gaussian,
+                total_hit_within_mask=sim_total_hit_within_mask,
+                original_event_number=sim_original_event_number,
+                annulus_mask=None,
+                max_plots=20,
+            )
+            displacements = displacements_full[~np.isnan(displacements_full)]
 
         # --- Save summary ---
         summary_stats = {
             'sigma_theta_deg': sigma_theta_deg,
-            'streak_radius_scale': STREAK_RADIUS_SCALE,
+            'streak_radius_scale': streak_radius_scale,
             'shell_thickness': SHELL_THICKNESS,
             'r_max_from_center': R_MAX_FROM_CENTER,
             'bg_n_range': [BG_N_MIN, BG_N_MAX],
@@ -300,8 +333,14 @@ def run_bootstrap_simulation(sigma_theta_deg_values, num_runs_per_sigma=1000):
             'noise_profile_source': noise_profile.get('source_path',
                                                       NOISE_PROFILE_PATH),
             'noise_profile_ang_half_width_deg': noise_profile.get('ang_half_width_deg', None),
-            're': re,
-            'mock_energy_value': mock_energy_value,
+            # Per-shot photoline geometry (peak_bin drawn uniformly per shot).
+            'peak_bin_range': [PEAK_BIN_MIN, PEAK_BIN_MAX],
+            'peak_bin_per_shot': sim_peak_bin.tolist(),
+            'mean_energy_per_shot': sim_mean_energy.tolist(),
+            're_per_shot': sim_re.tolist(),
+            # For downstream code that expected a single scalar mock_energy_value:
+            # take the peak_bin=21 midpoint of the sampling range as a fallback.
+            'mock_energy_value': int((PEAK_BIN_MIN + PEAK_BIN_MAX) // 2 + 13) * 32,
             'n_bg_per_shot': sim_n_bg.tolist(),
             'n_lobe_per_shot': sim_n_lobe.tolist(),
             # Ground-truth centers per shot (used for accuracy assessment
@@ -317,6 +356,7 @@ def run_bootstrap_simulation(sigma_theta_deg_values, num_runs_per_sigma=1000):
             'total_hits_per_shot': sim_total_hit_within_mask.tolist(),
             'scores': scores.tolist() if isinstance(scores, np.ndarray) else scores,
             'displacements': displacements.tolist() if isinstance(displacements, np.ndarray) else displacements,
+            'no_analysis': bool(no_analysis),
         }
         with open(os.path.join(output_dir_experiment, f'stats_sigma_{sigma_slug}deg.pkl'), 'wb') as f:
             pickle.dump(summary_stats, f)
@@ -334,63 +374,84 @@ def run_bootstrap_simulation(sigma_theta_deg_values, num_runs_per_sigma=1000):
             hits=sim_hits[cache_indices].astype(np.float32),
         )
 
-        # Also cache a set of >3σ *detected* shots so the accuracy plotter can
-        # render a second panel figure showing how well truly-detected shots
-        # are reconstructed. Reads back the significance array that
-        # compute_circular_wiggle_analysis just wrote to disk.
-        DETECTED_SIG_THRESHOLD = 3.0
-        DETECTED_CACHE_N = 30
-        peak_pos_path = os.path.join(
-            f'circular_wiggler_sim_sigma_{sigma_slug}deg_batch_metrics',
-            f'data_peak_positions_run_{sigma_slug}.npy',
+        # Persist the FULL per-shot hits stack so downstream density-anomaly
+        # analyses can re-derive ROI membership and split by peak energy without
+        # regenerating the sim. ~60 MB per 1000-shot sigma point at float32.
+        np.savez_compressed(
+            os.path.join(output_dir_experiment,
+                         f'shot_hits_full_sigma_{sigma_slug}deg.npz'),
+            hits=sim_hits.astype(np.float32),
+            mean_energy=sim_mean_energy,
+            peak_bin=sim_peak_bin,
+            re=sim_re,
+            total_hits_within_mask=sim_total_hit_within_mask,
+            cx_true=sim_cx_true,
+            cy_true=sim_cy_true,
+            streak_mode_true_rad=sim_streak_mode_true,
+            streak_radius_true_px=sim_streak_radius_true,
         )
-        try:
-            peak_data = np.load(peak_pos_path, allow_pickle=True).item()
-            sig_arr = np.asarray(peak_data['significance'], dtype=float)
-            detected = np.where(sig_arr > DETECTED_SIG_THRESHOLD)[0]
-            # Sort by descending sigma so the cache carries the strongest shots
-            # in case there are more than DETECTED_CACHE_N of them.
-            detected = detected[np.argsort(-sig_arr[detected])]
-            detected = detected[:DETECTED_CACHE_N]
-            if detected.size:
-                # Restore original-index order so panels traverse shots in
-                # time rather than by significance.
-                detected = np.sort(detected)
-                np.savez_compressed(
-                    os.path.join(output_dir_experiment,
-                                 f'shot_cache_detected_sigma_{sigma_slug}deg.npz'),
-                    shot_indices=detected,
-                    hits=sim_hits[detected].astype(np.float32),
-                    significance=sig_arr[detected].astype(np.float32),
-                    threshold=DETECTED_SIG_THRESHOLD,
-                )
-            else:
-                print(f'  [note] no shots exceed {DETECTED_SIG_THRESHOLD}σ; '
-                      'detected shot cache not written.')
-        except Exception as exc:
-            print(f'  [warn] could not build detected shot cache: {exc}')
 
-        # --- Trend histograms ---
-        fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(15, 4.5))
-        ax1.hist(scores, bins=30, color='crimson', alpha=0.75)
-        ax1.set_yscale('log')
-        ax1.set_title(f'Composite Score  |  sigma_theta={sigma_theta_deg:g} deg')
-        ax1.set_xlabel('score')
+        if not no_analysis:
+            # Cache a set of >3σ *detected* shots so the accuracy plotter can
+            # render a second panel figure showing how well truly-detected
+            # shots are reconstructed. Reads back the significance array that
+            # compute_circular_wiggle_analysis just wrote to disk.
+            DETECTED_SIG_THRESHOLD = 3.0
+            DETECTED_CACHE_N = 30
+            peak_pos_path = os.path.join(
+                LEGACY_OUTPUTS_ROOT,
+                f'circular_wiggler_sim_sigma_{sigma_slug}deg_batch_metrics',
+                f'data_peak_positions_run_{sigma_slug}.npy',
+            )
+            try:
+                peak_data = np.load(peak_pos_path, allow_pickle=True).item()
+                sig_arr = np.asarray(peak_data['significance'], dtype=float)
+                detected = np.where(sig_arr > DETECTED_SIG_THRESHOLD)[0]
+                # Sort by descending sigma so the cache carries the strongest
+                # shots in case there are more than DETECTED_CACHE_N of them.
+                detected = detected[np.argsort(-sig_arr[detected])]
+                detected = detected[:DETECTED_CACHE_N]
+                if detected.size:
+                    # Restore original-index order so panels traverse shots in
+                    # time rather than by significance.
+                    detected = np.sort(detected)
+                    np.savez_compressed(
+                        os.path.join(output_dir_experiment,
+                                     f'shot_cache_detected_sigma_{sigma_slug}deg.npz'),
+                        shot_indices=detected,
+                        hits=sim_hits[detected].astype(np.float32),
+                        significance=sig_arr[detected].astype(np.float32),
+                        threshold=DETECTED_SIG_THRESHOLD,
+                    )
+                else:
+                    print(f'  [note] no shots exceed {DETECTED_SIG_THRESHOLD}σ; '
+                          'detected shot cache not written.')
+            except Exception as exc:
+                print(f'  [warn] could not build detected shot cache: {exc}')
 
-        ax2.hist(displacements, bins=30, color='teal', alpha=0.75)
-        ax2.set_title(f'Wiggle offsets |r|  |  N={len(displacements)}')
-        ax2.set_xlabel('|r| [px]')
+            # --- Trend histograms (score / |r| distributions) ---
+            fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(15, 4.5))
+            ax1.hist(scores, bins=30, color='crimson', alpha=0.75)
+            ax1.set_yscale('log')
+            ax1.set_title(f'Composite Score  |  sigma_theta={sigma_theta_deg:g} deg')
+            ax1.set_xlabel('score')
 
-        ax3.hist(sim_n_bg, bins=np.arange(BG_N_MIN, BG_N_MAX + 2, 10),
-                 color='slategray', alpha=0.75, label='n_bg')
-        ax3.hist(sim_n_lobe, bins=np.arange(0, int(BG_N_MAX * LOBE_FRACTION) + 5),
-                 color='goldenrod', alpha=0.75, label='n_lobe')
-        ax3.set_title('per-shot electron counts')
-        ax3.legend()
+            ax2.hist(displacements, bins=30, color='teal', alpha=0.75)
+            ax2.set_title(f'Wiggle offsets |r|  |  N={len(displacements)}')
+            ax2.set_xlabel('|r| [px]')
 
-        plt.tight_layout()
-        fig.savefig(os.path.join(output_dir_experiment, f'distribution_sigma_{sigma_slug}deg.png'), dpi=130)
-        plt.close(fig)
+            ax3.hist(sim_n_bg, bins=np.arange(BG_N_MIN, BG_N_MAX + 2, 10),
+                     color='slategray', alpha=0.75, label='n_bg')
+            ax3.hist(sim_n_lobe, bins=np.arange(0, int(BG_N_MAX * LOBE_FRACTION) + 5),
+                     color='goldenrod', alpha=0.75, label='n_lobe')
+            ax3.set_title('per-shot electron counts')
+            ax3.legend()
+
+            plt.tight_layout()
+            fig.savefig(os.path.join(output_dir_experiment,
+                                     f'distribution_sigma_{sigma_slug}deg.png'),
+                        dpi=130)
+            plt.close(fig)
 
 
 if __name__ == "__main__":
@@ -399,9 +460,25 @@ if __name__ == "__main__":
                         help="Streak-length sigma values in degrees to sweep")
     parser.add_argument('--iterations', type=int, default=1000,
                         help="Number of Monte-Carlo shots per sigma point")
+    parser.add_argument('--rayleigh_scale', type=float, default=None,
+                        help="Rayleigh scale (px) for the per-shot streak radius. "
+                             "Overrides module default (0.0). Nonzero values are "
+                             "required for sigma_theta to actually affect output.")
+    parser.add_argument('--no-analysis', action='store_true',
+                        help="Skip compute_circular_wiggle_analysis + summary "
+                             "plots + detected-shot cache. Only writes "
+                             "shot_hits_full_sigma_*.npz and stats_sigma_*.pkl "
+                             "(scores/displacements empty). Use to generate "
+                             "fast shot datasets; run the streak finder "
+                             "post-hoc via scripts/run_analysis_on_bootstrap_hits.py.")
     args = parser.parse_args()
 
     default_array = [1.0, 3.0, 5.0, 10.0, 15.0, 20.0, 30.0, 45.0]
     selected = args.sigma_theta_deg if args.sigma_theta_deg is not None else default_array
 
-    run_bootstrap_simulation(selected, num_runs_per_sigma=args.iterations)
+    run_bootstrap_simulation(
+        selected,
+        num_runs_per_sigma=args.iterations,
+        streak_radius_scale=args.rayleigh_scale,
+        no_analysis=args.no_analysis,
+    )
